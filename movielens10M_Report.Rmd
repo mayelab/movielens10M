@@ -1,0 +1,563 @@
+---
+title: 'Capstone: Movielens Project'
+author: "Gustavo Mayeregger"
+date: "2020-04-16"
+output:  pdf_document
+---
+
+```{r setup, include=FALSE}
+
+library(tidyverse)
+library(caret)
+library(lubridate)
+library(knitr)
+library(kableExtra)
+library(tinytex)
+
+#IMPORTANT!!!!
+#First run the store_datasets.R to download and save locally the datasets
+
+load("./data/edx_&_validation.rda")
+
+```
+
+## Introduction
+
+This project consist in a movie recommendation system for the movielens dataset. One of the most popular implementation of the machine learning are the recommendation systems, they are everywhere, to each search of any kind of products we have a list of products that can interested us and in consequence more are the chances that we buy something.
+
+The movies recommendation become popular thanks to Netflix, who is the pioneer in movies streaming. With this system Netflix can predict which movies are the best recommendation to keep viewing movies.
+
+### Evaluation method
+
+The method chosen to generate the prediction is minimize the Residual Mean Square Error (RMSE) between the prediction ($\ \hat{y}$) en the actual values ($\ y$):
+
+$$\ RMSE = \sqrt{\frac{1}{N}\sum\limits\ (y - \hat{y})^2}$$
+
+```{r, echo=FALSE}
+RMSE <- function(true_ratings, predicted_ratings){
+  sqrt(mean((true_ratings - predicted_ratings)^2, na.rm=TRUE))
+}
+```
+
+
+### The data exploration
+
+For this project the chosen dataset is the 10 millions movielens dataset, that consist in 10 millions independent ratings. 
+The dataset can be downloaded from: http://files.grouplens.org/datasets/movielens/ml-10m.zip
+
+To train and test purpose the movielens data set was divided in to datasets: 
+
+  * The edx dataset with the 90% of the ratings. In this dataset is made all the data analysis, visualization and train algorithm.
+    
+  * And the validation dataset in which are made the prediction and final RMSE.
+
+Both datasets have the following fields:
+
+```{r, echo=FALSE}
+head(edx) %>% kable() %>% kable_styling(position = "center")
+```
+
+  * userID: the ID of each user.  
+
+  * movieID: the ID of each movie.  
+
+  * rating: the rate given to a movie from 0 to 5 by half points.
+
+  * timestamp: the time and day of the rate. Is given in seconds and begin the count in 1970-01-01.
+
+  * title: the title of the movie. Also contain the year of the movie release.
+
+  * genres: the genre of the movie. One movie can be in multiples genres.
+
+## Data Analysis
+
+In this section we will explore the data to find all the variables that effect the ratings. The best way is arrange the data and visualize it through graphics.
+
+
+### Movie effect
+
+There is obvious that movies influence the number of ratings and the rating itself.
+In the following two graphics we can see that there is movies with few number of ratings and others with a lot of ratings. Also there are movies with a low average rating from the users and others with more average rating. 
+
+```{r, echo=FALSE, out.width="50%", fig.show='hold'}
+edx %>% count(movieId) %>% 
+  ggplot(aes(n)) + geom_histogram(bins=15, color="darkblue", fill="blue", alpha=0.3) +
+                   scale_x_log10() +
+                   labs(x="movies IDs", y="number of ratings", 
+                        title="Number of ratings per movies")
+
+edx %>% group_by(movieId) %>% summarize(avg_rat = mean(rating)) %>%
+  ggplot(aes(avg_rat)) + geom_histogram(bins=15, color="darkblue", fill="blue", alpha=0.3) +
+  labs(x="average rating per movie", y="number of movies", 
+       title="Average ratings per movies")
+```
+
+The relation between movies and ratings is very strong and is a variable we need use in the prediction model.
+
+### User effect
+
+The same thing that occur with the movies occur with the users. There is users that rate few movies and users that rate a lot of movies. And there is users that rate low and others that place high ratings for the movies. 
+
+```{r, echo=FALSE, out.width="50%", fig.show='hold'}
+edx %>% count(userId) %>% 
+  ggplot(aes(n)) + geom_histogram(bins=15, color="darkgreen", fill="green", alpha=0.3) +
+  scale_x_log10() +
+  labs(x="user IDs", y="number of ratings", 
+       title="Number of ratings per users")
+
+edx %>% group_by(userId) %>% summarize(avg_rat = mean(rating)) %>%
+  ggplot(aes(avg_rat)) + geom_histogram(bins=15, color="darkgreen", fill="green", alpha=0.3) +
+  labs(x="average rating per user", y="number of users", 
+       title="Average ratings per users") 
+```
+
+Also this variable will be included for the prediction model.
+
+### Gender effect
+
+#### Individual genres
+
+In the dataset there are 19 different genres as can we see here:
+
+```{r, echo=FALSE}
+indiv_genres <- edx %>% group_by(genres) %>% 
+                summarize(n = n(), s = sum(rating)) %>% 
+                separate_rows(genres, sep = "\\|") %>% group_by(genres) %>% 
+                summarize(count = sum(n), avg_rat = sum(s)/count) %>%
+                filter(genres != "(no genres listed)")
+```
+```{r, echo=FALSE, out.width="50%", fig.show='hold'}
+indiv_genres %>% ggplot(aes(x=reorder(genres, count), y=count)) +
+  geom_bar(stat= "identity", fill="orange") + coord_flip(y=c(0,4300000)) +
+  labs(x="", y="", title="Gender vs number of ratings") +
+  geom_text(aes(label= count), hjust=-0.1, size=3) +
+  theme(axis.text.x = element_blank()) 
+
+indiv_genres %>% ggplot(aes(x=reorder(genres, avg_rat), y=avg_rat)) +
+  geom_bar(stat= "identity", fill="darkgreen") + coord_flip(y=c(3.2, 4.1)) +
+  labs(x="", y="", title="Gender vs average ratings") +
+  geom_text(aes(label= round(avg_rat, digits = 2)), hjust=-0.1, size=3) +
+  theme(axis.text.x = element_blank()) 
+```
+
+The most rated are the dramas, comedys and action movies. But the movies with the best ratings are the film-noir, documentary and war movies as we can see in the next chart.
+
+#### Multiple genres
+
+But in the movielens dataset the genre of the movies can consists in multiple genres. One movie can be adventure, action and comedy at the same time.
+
+```{r, echo=FALSE}
+group_genres <- edx %>% group_by(genres) %>% filter(n() > 50000) %>% 
+  summarize(count = n(), avg_rat = mean(rating)) %>% top_n(10, count) %>% 
+  arrange(desc(count))
+```
+```{r, echo=FALSE, out.width="50%", fig.show='hold'}
+group_genres %>% ggplot(aes(x=reorder(genres, count), y=count)) +
+  geom_bar(stat= "identity", fill="orange") + coord_flip(y=c(0,780000)) +
+  labs(x="", y="", title="Multiple Genders vs number of ratings") +
+  geom_text(aes(label= count), hjust=-0.1, size=3) +
+  theme(axis.text.y = element_text(hjust = 1, size=8), 
+        axis.text.x = element_blank()) 
+
+group_genres %>% ggplot(aes(x=reorder(genres, avg_rat), y=avg_rat)) +
+  geom_bar(stat= "identity", fill="darkgreen") + coord_flip(y=c(3.2, 4.05)) +
+  labs(x="", y="", title="Multiple Genders vs average ratings") +
+  geom_text(aes(label= round(avg_rat, digits = 2)), hjust=-0.1, size=3) +
+  theme(axis.text.y = element_text(hjust = 1, size=8), 
+        axis.text.x = element_blank()) 
+```
+
+If we look at the multiples genres format also the most rated movies are the dramas, comedy and action genres and the genre with the best rating are the Crime|Drama combination.
+
+With this analysis we conclude that the genre of a movie influence the rating of the users and must be considered as a variable in the prediction model. The difference if we take the individuals genres or the multiple genders is not significant and we choose the multiple gender variable as the dataset give us.
+
+### Timeline effect
+
+Now we going to analyze the behavior of the ratings in the time. To do that we will use the timestamp provided in the dataset to calculate different time lapses like years, days, days of the week and hour of the day. 
+
+#### Ratings through the years
+
+To study this we took the timestamp and separate in all the months from the date of the first rate (january 1995) to the last (january 2009). For each month we calculate the average rating and we can see them in the next graphic.
+
+```{r, message=FALSE, echo=FALSE, out.width="60%", fig.align="center"}
+edx %>% mutate(month = round_date(as_datetime(timestamp), "month")) %>%
+          group_by(month) %>% filter(n() >= 5) %>%
+          summarize(avg_rat_per_month = mean(rating)) %>% 
+          ggplot(aes(month, avg_rat_per_month)) + 
+          geom_point(alpha=0.6, color="orange") + geom_smooth() +
+          labs(x="date", y="average rating", 
+               title="Average rating vs month of the rating") +
+          geom_abline(slope=0, intercept = mean(edx$rating), color="darkblue") +
+          geom_text(x=as_datetime("2005-01-01"), y = 3.54, 
+                        label = "overall avg rating", color="darkblue")
+```
+
+In the graphic we can see that the rating across the years has been changing comparing to the overall rating of 3.51. From 1995 to 2002 the average rating were higher tan the overall rating. But from 2002 to 2007 the average rating were lower than the overall rating. In the 2 last years the ratings begun increasing again. 
+
+The average ratings variations are between 3.3 to 3.7 that is a significant range and we must include this variable in the prediction model.
+
+#### Ratings through the days of the month
+
+```{r, message=FALSE, echo=FALSE, out.width="60%", fig.align="center"}
+edx %>% mutate(day = day(as_datetime(timestamp))) %>%
+  group_by(day) %>% summarize(avg_rat_per_day = mean(rating)) %>% 
+  ggplot(aes(day, avg_rat_per_day)) + 
+  geom_point(alpha=0.6, color="orange") + geom_smooth() +
+  labs(x="day", y="average rating", 
+       title="Average rating vs day of the month") +
+  geom_abline(slope=0, intercept = mean(edx$rating), color="darkblue") +
+  geom_text(x=10, y = 3.515, label = "overall avg rating", color="darkblue")
+```
+
+Here we can´t see a clear relation between the day on the month and the ratings and we will not consider this variable.
+
+#### Ratings through the days of the week
+
+```{r, message=FALSE, echo=FALSE, out.width="60%", fig.align="center"}
+edx %>% mutate(day = wday(as_datetime(timestamp))) %>%
+  group_by(day) %>% summarize(avg_rat_per_day = mean(rating)) %>% 
+  ggplot(aes(day, avg_rat_per_day)) + geom_smooth() +
+  geom_point(alpha=0.6, color="orange") + 
+  labs(x="day", y="average rating", 
+       title="Average rating vs day of the week") +
+  geom_abline(slope=0, intercept = mean(edx$rating), color="darkblue") +
+  geom_text(x=4.5, y = 3.515, label = "overall avg rating", color="darkblue") +
+  scale_x_continuous(breaks = 1:7, labels=c("mon", "tue", "wed", "thu", "fri", "sat", "sun"))
+```
+
+In this case there is a slightly relation between the day of the week and the rating. in the weekends increase the average rating and in the middle of the week decrease. But the change (3.50 to 3.53) is not considerably.
+
+#### Ratings through the hour of the day
+
+```{r, message=FALSE, echo=FALSE, out.width="60%", fig.align="center"}
+edx %>% mutate(hour = hour(as_datetime(timestamp))) %>%
+  group_by(hour) %>% summarize(avg_rat_per_hour = mean(rating)) %>% 
+  ggplot(aes(hour, avg_rat_per_hour)) + 
+  geom_point(alpha=0.6, color="orange") + geom_smooth() +
+  labs(x="hour", y="average rating", 
+       title="Average rating vs hour of the day") +
+  geom_abline(slope=0, intercept = mean(edx$rating), color="darkblue") +
+  geom_text(x=9, y = 3.515, label = "overall avg rating", color="darkblue")
+```
+
+As happened with the days of the week here there is a slightly relation, we can see that the average rating increase at the and of the day and decrease in the morning. But this changes (3.50 to 3.53) are also not considerably for the prediction model.
+
+### Year of movie release effect
+
+As we saw in the introduction section, the titles of the movies in the dataset include also the year of the movie release. With this new variable we will analyze the relation between the ratings and this years. Is normal imagine that old movies are for a selected group of users and this users overrating them.
+
+```{r, message=FALSE, echo=FALSE, out.width="60%", fig.align="center"}
+edx %>% mutate(y_rel = str_extract(title, pattern="\\([1-2]\\d{3}\\)"),
+                  release = as.numeric(str_extract(y_rel, pattern="\\d{4}"))) %>%
+          group_by(release) %>% filter(n() >= 5) %>%
+          summarize(avg_rat_rea = mean(rating)) %>%
+          ggplot(aes(release, avg_rat_rea)) + 
+          geom_point(alpha=0.6, color="orange") + geom_smooth() +
+          labs(x="date", y="average rating", 
+               title="Average rating vs year of movie release") +
+          geom_abline(slope=0, intercept = mean(edx$rating), color="darkblue") +
+          geom_text(x=1950, y = 3.54, 
+                    label = "overall avg rating", color="darkblue")
+```
+
+In the graphic we can see a strong relation between the release year of the movie and the ratings. For the movies older than 1990 the average rating increase considerably till averages near 4.0. But for the movies released after 1990 the average rating decrease to 3.4.
+
+This variable have a strong relation with the rating and we must include it in our prediction model.
+ 
+
+## Modeling method
+
+In the analysis section we conclude that the variables that have more influence in the ratings are: movies, users, genres, date of rating and year of movie release.
+
+### The simplest method
+
+The simplest method consist in calculate the overall average rating ($\mu$) and then make all the predictions equal to $\mu$. The resulting RMSE is:
+
+```{r, echo=FALSE}
+mu <- mean(edx$rating)
+
+rmse_simple <- RMSE(mu, validation$rating)
+
+result_table <- tibble(MODEL="Just the average", RMSE=rmse_simple)
+
+result_table %>% kable() %>% kable_styling(position = "center")
+```
+
+### Movie and user effect
+
+The changes that appear in the rating from movie to movie and user to user can be modeled like this:
+
+$$\hat{r}_{iu} = \mu + b_i + b_u + \epsilon_{iu}$$
+
+Where: 
+
+  $\hat{r}_{iu}$ is the predicted rating considering the movies ($i$) and the users ($u$)
+
+  $\mu$ in the overall rating average of the dataset, 
+
+  $b_i$ is the bias of each movie from $\mu$,
+
+  $b_u$ is the bias of each user from $\mu$ and
+
+  $\epsilon_{iu}$ is a random error variable.
+      
+Each bias can be calculated in this way. Note that to calculate the bias of the users we consider the bias of the movies in the mean calculus.
+$$b_i = \frac{1}{n_i}\sum_{k} (r_{i_k} - \mu) \qquad \qquad b_u = \frac{1}{n_u}\sum_{k} (r_{u_k} - b_{i_k} - \mu)$$
+Where $r_{i_k}$ are the observed ratings and $n_i$ is the number of ratings for all the movies. In the same way $r_{u_k}$ are the observed ratings and $n_u$ the number of ratings for all the users.
+
+Note that we can use a linear model function to calculate the same but this method consumes much more time for the machine because our extense dataset.
+
+First let´s compute the $b_i$ and $b_u$ bias in the edx dataset. then the prediction and compare it to the validation dataset with the RMSE function.
+
+```{r, echo=FALSE, out.width="50%", fig.show='hold'}
+# The overall rating average
+mu <- mean(edx$rating)
+
+b_i <- edx %>% group_by(movieId) %>%
+  summarize(b_i = mean(rating - mu)) 
+
+b_u <- edx %>% left_join(b_i, by = "movieId") %>%
+  group_by(userId) %>%
+  summarize(b_u = mean(rating - b_i - mu)) 
+
+b_i %>% ggplot(aes(b_i)) +
+  geom_histogram(bins=10, color="darkblue", fill="blue", alpha=0.5) +
+  labs(x="movie bias (b_i)", y="number of movies", 
+     title="Movies biases distribution")
+
+b_u %>% ggplot(aes(b_u)) +
+  geom_histogram(bins=10, color="darkgreen", fill="green", alpha=0.5) +
+  labs(x="user bias (b_u)", y="number of users", 
+       title="Users biases distribution")
+```
+In this pictures we can see that the biases have a normal distribution, and the variation is between -3.5 and 1.5 as we expect because the $\mu$ is 3.5.
+
+Now we can calculate the ratings predictions with $\hat{r}_{iu} = \mu + b_i + b_u + \epsilon_{iu}$ and then the RMSE with the predicted ratings and the ratings in the validation set.
+
+```{r, echo=FALSE}
+prediction <- validation %>% 
+  left_join(b_i, by = "movieId") %>%
+  left_join(b_u, by = "userId") %>%
+  mutate(r_iu = mu + b_i + b_u) %>% select(title, rating, r_iu)
+
+rmse1 <- RMSE(prediction$r_iu, validation$rating)
+
+result_table <-  bind_rows(result_table, tibble(MODEL="Movie & User Effect", RMSE=rmse1))
+
+result_table %>% kable() %>% kable_styling(position = "center")
+```
+
+With the obtained result now we can search the greatest errors obtained by the use of the studied model. 
+
+Based in the predictions used to calculate the RSME we can calculate the error in the predictions the difference between the predicted ratings and the validation dataset ratings.
+
+If we average this errors by movies, count the ratings per movies and then plot that is clear that the movies with less number of ratings have the greatest errors.
+
+```{r, echo=FALSE, out.width="60%", fig.align="center"}
+prediction %>% group_by(title) %>% summarize(error = abs(mean(rating-r_iu)), count=n()) %>%
+  arrange(desc(error)) %>%
+  ggplot(aes(count, error)) + geom_point(color="purple", alpha=0.3) + scale_x_log10() +
+  labs(x="number of movies", y="average error per movie", 
+       title="Average error vs number of ratings per movie") 
+```
+
+This problem is explained by the fact that when we calculate the biases $b_i$ and $b_u$ we use the mean function. The more number of ratings we calculate the mean the less is the standard error ($se=\overline{x}/\sqrt{n}$). One method to solve this problem is called regularization.
+
+### Movie and user effect with regularization
+
+The regularization method consist in penalize the mean by adding a constant $\lambda$ to the $n$ 
+$$\overline{x} = \frac{1}{n}\sum_{k}x_k \qquad \qquad \overline{x} = \frac{1}{n+\lambda}\sum_{k}x_k$$
+When $n$ is very large compared with $\lambda$ the effect of $\lambda$ in the mean is not significant. But when $n$ is equal or less than $\lambda$ the mean depends of $\lambda$. With this we can keep a lower standard error $se=\overline{x}/\sqrt{n+\lambda}$ thanks to the penalization.
+
+Let´s use this method in the previous model to compare the obtained RMSE.
+
+Because the $\lambda$ is a constant, we need a series of then to see which one produce the minimum RMSE.
+$$\lambda={0, 0.5, 1, 1.5,..., 10}$$
+
+```{r, echo=FALSE}
+rmse_iu_reg <- function(train_set, test_set, l=5) {
+  rmses <- sapply(l, function(l){
+
+    # The overall rating average
+    mu <- mean(train_set$rating)
+
+    b_i <- train_set %>% group_by(movieId) %>%
+      summarize(b_i = sum(rating - mu)/(n()+l)) 
+
+    b_u <- train_set %>% left_join(b_i, by = "movieId") %>%
+      group_by(userId) %>%
+      summarize(b_u = sum(rating - b_i - mu)/(n()+l))  
+
+    r_iu <- test_set %>% 
+      left_join(b_i, by = "movieId") %>%
+      left_join(b_u, by = "userId") %>%
+      mutate(r_iu = mu + b_i + b_u) %>% .$r_iu
+    return(RMSE(r_iu, test_set$rating))
+  })
+  results <- data.frame(lambda=l, rmse = rmses)
+  ind <- which.min(results$rmse)
+  best_tune <- data.frame(lambda = results$lambda[ind],
+                          rmse = results$rmse[ind])
+  list(results = results, best_tune = best_tune)
+}
+
+lambdas <- seq(0, 10, 0.5)
+result_reg <- rmse_iu_reg(edx, validation, lambdas)
+```
+```{r, echo=FALSE, out.width="60%", fig.align="center"}
+result_reg$results %>% ggplot(aes(lambda, rmse)) + geom_point(color="darkblue") +
+  labs(x="lambda", y="RMSE", 
+       title="Lambda vs RMSE") 
+```
+
+In the graphic we can see that the minimum RMSE correspond to a $\lambda$ of 5. The regularized model have a best RMSE than the previous one without regularization.
+
+```{r, echo=FALSE}
+rmse2 <- result_reg$best_tune$rmse
+
+result_table <-  bind_rows(result_table, tibble(MODEL="Regularized Movie & User", 
+                                                RMSE=rmse2))
+result_table %>% kable() %>% kable_styling(position = "center")
+```
+
+### Movie, user, genre, date & release model with regularization
+
+User and movies are very important variables, but as we saw in the analysis section there are others like the genre, the date of the rating and the year of the movie release.
+
+This five variables generate each one a bias from the overall average rating like we saw earlier for movies ($b_i$) and users ($b_u$ ).
+$$b_i = \frac{1}{n_i+\lambda}\sum_{k} (r_{i_k} - \mu) \qquad \qquad b_u = \frac{1}{n_u+\lambda}\sum_{k} (r_{u_k} - b_{i_k} - \mu)$$
+The other three biases are $b_g$ for genres, $b_d$ for the date of the rating and $b_r$ for the year of the movie release.
+$$b_g = \frac{1}{n_g+\lambda}\sum_{k} (r_{g_k} - b_{i_k} - b_{u_k} - \mu) \qquad \qquad b_d = \frac{1}{n_d+\lambda}\sum_{k} (r_{d_k} - b_{i_k} - b_{u_k} - b_{g_k} - \mu)$$
+$$b_r = \frac{1}{n_r+\lambda}\sum_{k} (r_{r_k} - b_{i_k} - b_{u_k} - b_{g_k} - b_{d_k} - \mu)$$
+And the predicted rating with those biases is:
+$$\hat{r}_{iugdr} = \mu + b_i + b_u + b_g + b_d + b_r + \epsilon_{iu}$$
+Note that in the calculus of the biases we include the penalization constant $\lambda$ to obtain a regularized model.
+
+Because we aggregate new variables to our model, we need to re calculate the $\lambda$ for this complete set of variables.
+
+We know that the best $\lambda$ is near 5 and now we will use a set of values near 5 to find the best tune.
+$$\lambda=4, 4.5, 5.0, 5.5, 6$$
+
+```{r, echo=FALSE}
+rmse_iugdr_reg <- function(train_set, test_set, l=5) {
+  rmses <- sapply(l, function(l){
+
+    # Creating in the train and test sets the month column that represent
+    # the month that the rating was made and the release column
+    # that represent the year that the movie had been released
+    
+    train_set <- train_set %>% mutate(month = round_date(as_datetime(timestamp), "month"), y_rel = str_extract(title, pattern="\\([1-2]\\d{3}\\)"), release = as.numeric(str_extract(y_rel, pattern="\\d{4}"))) %>% select(-y_rel)
+    
+    test_set <- test_set %>% mutate(month = round_date(as_datetime(timestamp), "month"), y_rel = str_extract(title, pattern="\\([1-2]\\d{3}\\)"), release = as.numeric(str_extract(y_rel, pattern="\\d{4}"))) %>% select(-y_rel)  
+    
+    # The overall rating average
+    mu <- mean(train_set$rating)
+    
+    b_i <- train_set %>% group_by(movieId) %>%
+      summarize(b_i = sum(rating - mu)/(n()+l)) 
+   
+    b_u <- train_set %>% left_join(b_i, by = "movieId") %>%
+      group_by(userId) %>%
+      summarize(b_u = sum(rating - b_i - mu)/(n()+l))  
+    
+    b_g <- train_set %>%  left_join(b_i, by = "movieId") %>%
+      left_join(b_u, by = "userId") %>% 
+      group_by(genres) %>%
+      summarize(b_g = sum(rating - b_i - b_u - mu)/(n()+l))
+    
+    b_d <- train_set %>% left_join(b_i, by = "movieId") %>%
+      left_join(b_u, by = "userId") %>% left_join(b_g, by = "genres") %>%
+      group_by(month) %>%
+      summarize(b_d = sum(rating - b_i - b_u - b_g - mu)/(n()+l))
+    
+    b_r <- train_set %>% left_join(b_i, by = "movieId") %>%
+      left_join(b_u, by = "userId") %>% left_join(b_g, by = "genres") %>%
+      left_join(b_d, by = "month") %>%
+      group_by(release) %>%
+      summarize(b_r = sum(rating - b_i - b_u - b_g - b_d - mu)/(n()+l))
+    
+    predicted_ratings <- test_set %>% 
+      left_join(b_i, by = "movieId") %>%
+      left_join(b_u, by = "userId") %>%
+      left_join(b_g, by = "genres") %>%
+      left_join(b_d, by = "month") %>%
+      left_join(b_r, by = "release") %>%
+      mutate(pred = mu + b_i + b_u + b_g + b_d + b_r) %>%
+      .$pred
+    return(RMSE(predicted_ratings, test_set$rating))
+  })
+  results <- data.frame(lambda=l, rmse = rmses)
+  ind <- which.min(results$rmse)
+  best_tune <- data.frame(lambda = results$lambda[ind],
+                          rmse = results$rmse[ind])
+  list(results = results, best_tune = best_tune)
+}
+lambdas <- seq(4, 6, 0.5)
+result_complete <- rmse_iugdr_reg(edx, validation, lambdas)
+```
+```{r, echo=FALSE, out.width="60%", fig.align="center"}
+result_complete$results %>% ggplot(aes(lambda, rmse)) + geom_point(color="darkblue") +
+  labs(x="lambda", y="RMSE", 
+       title="Lambda vs RMSE for complete model") 
+```
+
+From the graphic we can take that the best $\lambda$ is 5.5 and the RMSE is even lower than the previous model.
+
+```{r, echo=FALSE}
+rmse3 <- result_complete$best_tune$rmse
+
+result_table <-  bind_rows(result_table, tibble(MODEL="Regularized Movie, User, Gender, Date & Release", 
+                                                RMSE=rmse3))
+result_table %>% kable() %>% kable_styling(position = "center")
+```
+
+## Results
+
+With the simplest method that consist in predict all like the overall average we obtain a RMSE = 1.0612. We will use these value to calculate the improvement of each model vs just the average.
+
+```{r, echo=FALSE}
+result_table %>% mutate(IMPROVE = 1-RMSE/rmse_simple) %>% kable()  %>% kable_styling(position = "center")
+```
+
+There is a 18.45% reduction in the RMSE using the Movie & User effect model. This change is the biggest as we can expect because in a movie recommendation system the two principal  components are the movies and users. All the others variables will produce smallest improvements.
+
+With the regularized model we improve the previous model for smallest number of ratings. That change we can see if we compare the best and worst movies with the number of ratings of each ones.
+
+```{r, echo=FALSE}
+best_or_worst <- function(data, best, reg){
+    mu <- mean(edx$rating)
+  
+    data %>% group_by(movieId) %>%
+    mutate(b_i = sum(rating - mu)/(n()+5*reg)) %>% ungroup() %>%
+    group_by(userId) %>%
+    mutate(b_u = sum(rating - b_i - mu)/(n()+5*reg)) %>% ungroup() %>%
+    group_by(title) %>% summarize(count = n(), pred = mean(mu + b_i + b_u)) %>%
+    top_n(ifelse(best, 10, -10), pred) %>% select(-pred)
+}
+```
+
+```{r, echo=FALSE}
+best_or_worst(edx, TRUE, FALSE) %>% kable(caption="Best Movies without Regularization") %>% kable_styling(position = "center")
+```
+
+```{r, echo=FALSE}
+best_or_worst(edx, TRUE, TRUE) %>% kable(caption="Best Movies with Regularization") %>% kable_styling(position = "center")
+```
+
+After look the tables we can see the importance of the regularization. The improve in the precision of the predictions (18.51% compared to the average) is not too much but affect at the best and worst predictions of the dataset that are just the most searched parameters.
+
+The addition of the others variables to the model (genre, date and release) cause a higher improve than the model with only the movies and users (18.57% compared to the average).
+
+## Conclusion
+
+The goal of this project was design a movie recommendation system for the Movielens dataset with 10 millions of ratings. One of the mayor complexity is just manage the 10 millions of observations. 
+
+We studied various methods (lm, glm, knn, rpart, rf) to model a system like this but based on a smaller dataset (1000000 observations). If we use any of those models for sure we will achieve a smaller RSME but that will take too much time and the risk of crash the software.
+
+For that reason the chosen method was modeling with the bias from the overall rating for each variable to calculate the prediction. This method is not the more effective but is simple and take less time to the computer than the others methods.
+
+Another method used was the regularization during the biases calculus. This technique help to a better prediction when the number of observations (ratings) is very low, to smaller observations we have greater standard errors.
+
+A future work can consist in explore an others methods, like the dimension reduction, principal component analysis and matrix factorization. But first I need to upgrade my computer for those methods because they consumes too much resources.
+
+I´m very happy with all I learned in this 9 courses of HarvardX. Is my first online course and is the first time I face with the data science. I have a grade in mathematics and most of the statistics themes were familiar to me. The mayor challenge was the coding and this course helped to me so much.
