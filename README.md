@@ -7,6 +7,6 @@ To store the edx and validation datasets in your local working directory you mus
 
 Files:  
 movielens10M.R  -  R code  
-movielens10M_report.Rmd - the R Markdown code
-movielens10M_report.pdf - the pdf generated per the Markdown
+movielens10M_report.Rmd - the R Markdown code  
+movielens10M_report.pdf - the pdf generated per the Markdown  
 store_datasets.R - code to download the movielens dataset and generate the edx and validation datasets
